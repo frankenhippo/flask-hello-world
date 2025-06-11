@@ -1,61 +1,67 @@
-# cloud-build-triggers.yaml
-# This file contains the Cloud Build trigger configurations for different environments
-# Apply these using gcloud CLI or the Cloud Console
+# Cloud Build Triggers Configuration
+# Import with: gcloud alpha builds triggers import --source=cloud-build-triggers.yaml
 
-# Development environment trigger
-apiVersion: cloudbuild.cnrm.cloud.google.com/v1beta1
-kind: CloudBuildTrigger
-metadata:
-  name: hello-world-app-dev-trigger
-spec:
-  description: "Deploy to development environment on push to main branch"
+# Development Environment Trigger
+- name: 'deploy-to-dev'
+  description: 'Deploy to development environment on main branch push'
   github:
-    owner: "your-github-username"  # Update with your GitHub username
-    name: "your-repo-name"         # Update with your repository name
+    owner: 'frankenhippo'  # Change to your GitHub username
+    name: 'flask-hello-world'  # Change to your repository name
     push:
-      branch: "^main$"
-  filename: "cloudbuild.yaml"
+      branch: '^main$'
+  filename: 'cloudbuild.yaml'
   substitutions:
-    _ENVIRONMENT: "dev"
-    _SERVICE_NAME: "hello-world-app"
-    _REGION: "us-central1"
-    _TF_STATE_BUCKET: "your-terraform-state-bucket"  # Update with your bucket name
+    _ENVIRONMENT: 'dev'
+    _SERVICE_NAME: 'flask-hello-world'  # Change this
+    _TF_STATE_BUCKET: 'your-tf-state-bucket'  # Change this
+    _REGION: 'us-central1'
+  includeBuildLogs: 'INCLUDE_BUILD_LOGS_WITH_STATUS'
 
----
-# Test environment trigger
-apiVersion: cloudbuild.cnrm.cloud.google.com/v1beta1
-kind: CloudBuildTrigger
-metadata:
-  name: hello-world-app-test-trigger
-spec:
-  description: "Deploy to test environment on push to test branch"
+# Test Environment Trigger  
+- name: 'deploy-to-test'
+  description: 'Deploy to test environment on test branch push'
   github:
-    owner: "your-github-username"
-    name: "your-repo-name"
+    owner: 'frankenhippo'  # Change to your GitHub username
+    name: 'flask-hello-world'  # Change to your repository name
     push:
-      branch: "^test$"
-  filename: "cloudbuild.yaml"
+      branch: '^test$'
+  filename: 'cloudbuild.yaml'
   substitutions:
-    _ENVIRONMENT: "test"
-    _SERVICE_NAME: "hello-world-app"
-    _REGION: "us-central1"
-    _TF_STATE_BUCKET: "your-terraform-state-bucket"
+    _ENVIRONMENT: 'test'
+    _SERVICE_NAME: 'flask-hello-world'  # Change this
+    _TF_STATE_BUCKET: 'your-tf-state-bucket'  # Change this
+    _REGION: 'us-central1'
+  includeBuildLogs: 'INCLUDE_BUILD_LOGS_WITH_STATUS'
 
----
-# Live environment trigger
-apiVersion: cloudbuild.cnrm.cloud.google.com/v1beta1
-kind: CloudBuildTrigger
-metadata:
-  name: hello-world-app-live-trigger
-spec:
-  description: "Deploy to live environment on tag creation"
+# Production Environment Trigger
+- name: 'deploy-to-live'
+  description: 'Deploy to production environment on version tag'
   github:
-    owner: "your-github-username"
-    name: "your-repo-name"
-    tag: "^v[0-9]+\\.[0-9]+\\.[0-9]+$"  # Matches version tags like v1.0.0
-  filename: "cloudbuild.yaml"
+    owner: 'frankenhippo'  # Change to your GitHub username  
+    name: 'flask-hello-world'  # Change to your repository name
+    push:
+      tag: '^v[0-9]+\.[0-9]+\.[0-9]+$'  # Matches v1.0.0, v2.1.3, etc.
+  filename: 'cloudbuild.yaml'
   substitutions:
-    _ENVIRONMENT: "live"
-    _SERVICE_NAME: "hello-world-app"
-    _REGION: "us-central1"
-    _TF_STATE_BUCKET: "your-terraform-state-bucket"
+    _ENVIRONMENT: 'live'
+    _SERVICE_NAME: 'flask-hello-world'  # Change this
+    _TF_STATE_BUCKET: 'your-tf-state-bucket'  # Change this
+    _REGION: 'us-central1'
+  includeBuildLogs: 'INCLUDE_BUILD_LOGS_WITH_STATUS'
+
+# Manual Staging Trigger (optional)
+- name: 'deploy-to-staging'
+  description: 'Manual deploy to staging environment'
+  github:
+    owner: 'frankenhippo'  # Change to your GitHub username
+    name: 'flask-hello-world'  # Change to your repository name
+    push:
+      branch: '^staging$'
+  filename: 'cloudbuild.yaml'
+  substitutions:
+    _ENVIRONMENT: 'staging'
+    _SERVICE_NAME: 'flask-hello-world'  # Change this
+    _TF_STATE_BUCKET: 'your-tf-state-bucket'  # Change this
+    _REGION: 'us-central1'
+  includeBuildLogs: 'INCLUDE_BUILD_LOGS_WITH_STATUS'
+  disabled: false  # Set to true if you don't want this trigger initially
