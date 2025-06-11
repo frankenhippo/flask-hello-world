@@ -1,0 +1,58 @@
+# cloudbuild.yaml
+steps:
+  # Build the container image
+  - name: 'gcr.io/cloud-builders/docker'
+    args:
+      - 'build'
+      - '-t'
+      - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_SERVICE_NAME}-${_ENVIRONMENT}/${_SERVICE_NAME}:${SHORT_SHA}'
+      - '.'
+    dir: 'app'
+
+  # Push the container image to Artifact Registry
+  - name: 'gcr.io/cloud-builders/docker'
+    args:
+      - 'push'
+      - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_SERVICE_NAME}-${_ENVIRONMENT}/${_SERVICE_NAME}:${SHORT_SHA}'
+
+  # Initialize Terraform
+  - name: 'hashicorp/terraform:1.5'
+    entrypoint: 'sh'
+    args:
+      - '-c'
+      - |
+        cd terraform
+        terraform init \
+          -backend-config="bucket=${_TF_STATE_BUCKET}" \
+          -backend-config="prefix=${_SERVICE_NAME}/${_ENVIRONMENT}"
+
+  # Plan Terraform changes
+  - name: 'hashicorp/terraform:1.5'
+    entrypoint: 'sh'
+    args:
+      - '-c'
+      - |
+        cd terraform
+        terraform plan \
+          -var-file="environments/${_ENVIRONMENT}.tfvars" \
+          -var="image_tag=${SHORT_SHA}" \
+          -var="project_id=${PROJECT_ID}" \
+          -out=tfplan
+
+  # Apply Terraform changes
+  - name: 'hashicorp/terraform:1.5'
+    entrypoint: 'sh'
+    args:
+      - '-c'
+      - |
+        cd terraform
+        terraform apply -auto-approve tfplan
+
+substitutions:
+  _REGION: 'us-central1'
+  _SERVICE_NAME: 'hello-world-app'
+  _ENVIRONMENT: 'dev'
+  _TF_STATE_BUCKET: 'your-terraform-state-bucket'
+
+options:
+  logging: CLOUD_LOGGING_ONLY
