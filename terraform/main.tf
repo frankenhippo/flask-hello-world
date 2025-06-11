@@ -1,4 +1,5 @@
-# terraform/main.tf
+# Terraform configuration for Google Cloud Run deployment with Artifact Registry
+
 terraform {
   required_version = ">= 1.0"
   required_providers {
@@ -6,12 +7,13 @@ terraform {
       source  = "hashicorp/google"
       version = "~> 5.0"
     }
-    google-beta = {
-      source  = "hashicorp/google-beta"
-      version = "~> 5.0"
-    }
   }
-  backend "gcs" {}
+  
+  backend "gcs" {
+    # Configure via terraform init with -backend-config
+    # bucket = "your-terraform-state-bucket"
+    # prefix = "terraform/state"
+  }
 }
 
 provider "google" {
@@ -19,57 +21,51 @@ provider "google" {
   region  = var.region
 }
 
-provider "google-beta" {
-  project = var.project_id
-  region  = var.region
-}
-
-# Enable required APIs
-resource "google_project_service" "required_apis" {
-  for_each = toset([
-    "run.googleapis.com",
-    "artifactregistry.googleapis.com",
-    "cloudbuild.googleapis.com",
-    "iam.googleapis.com"
-  ])
-  
-  service = each.value
-  disable_on_destroy = false
-}
-
-# Artifact Registry Repository
-resource "google_artifact_registry_repository" "repo" {
-  repository_id = "${var.service_name}-${var.environment}"
+# Create Artifact Registry repository FIRST
+resource "google_artifact_registry_repository" "main" {
   location      = var.region
+  repository_id = "${var.service_name}-${var.environment}"
+  description   = "Docker repository for ${var.service_name} ${var.environment} environment"
   format        = "DOCKER"
-  description   = "Docker repository for ${var.service_name} ${var.environment}"
   
-  depends_on = [google_project_service.required_apis]
+  cleanup_policies {
+    id     = "keep-minimum-versions"
+    action = "KEEP"
+    most_recent_versions {
+      keep_count = 10
+    }
+  }
+
+  cleanup_policies {
+    id     = "delete-old-versions"
+    action = "DELETE" 
+    older_than = "30d"
+  }
 }
 
-# Service Account for Cloud Run
-resource "google_service_account" "service_account" {
-  account_id   = "${var.service_name}-${var.environment}"
-  display_name = "Service Account for ${var.service_name} ${var.environment}"
-  description  = "Service account used by ${var.service_name} in ${var.environment} environment"
+# IAM Service Account for Cloud Run
+resource "google_service_account" "cloudrun_service_account" {
+  account_id   = "${var.service_name}-${var.environment}-sa"
+  display_name = "${var.service_name} ${var.environment} Service Account"
+  description  = "Service account for ${var.service_name} Cloud Run service in ${var.environment}"
 }
 
-# IAM bindings for the service account
-resource "google_project_iam_member" "service_account_bindings" {
+# Apply base IAM roles to service account
+resource "google_project_iam_member" "service_account_roles" {
   for_each = toset(var.service_account_roles)
   
   project = var.project_id
   role    = each.value
-  member  = "serviceAccount:${google_service_account.service_account.email}"
+  member  = "serviceAccount:${google_service_account.cloudrun_service_account.email}"
 }
 
-# Custom IAM bindings
+# Apply custom IAM bindings with conditions
 resource "google_project_iam_member" "custom_bindings" {
   for_each = var.custom_iam_bindings
   
   project = var.project_id
   role    = each.value.role
-  member  = "serviceAccount:${google_service_account.service_account.email}"
+  member  = "serviceAccount:${google_service_account.cloudrun_service_account.email}"
   
   dynamic "condition" {
     for_each = each.value.condition != null ? [each.value.condition] : []
@@ -86,8 +82,11 @@ resource "google_cloud_run_v2_service" "service" {
   name     = "${var.service_name}-${var.environment}"
   location = var.region
   
+  deletion_protection = false
+  ingress = "INGRESS_TRAFFIC_ALL"
+  
   template {
-    service_account = google_service_account.service_account.email
+    service_account = google_service_account.cloudrun_service_account.email
     
     scaling {
       min_instance_count = var.min_instances
@@ -95,10 +94,11 @@ resource "google_cloud_run_v2_service" "service" {
     }
     
     containers {
-      image = "${var.region}-docker.pkg.dev/${var.project_id}/${google_artifact_registry_repository.repo.repository_id}/${var.service_name}:${var.image_tag}"
+      # Use the Artifact Registry repository we created
+      image = "${var.region}-docker.pkg.dev/${var.project_id}/${google_artifact_registry_repository.main.repository_id}/${var.service_name}:latest"
       
       ports {
-        container_port = var.container_port
+        container_port = 8080
       }
       
       resources {
@@ -106,8 +106,10 @@ resource "google_cloud_run_v2_service" "service" {
           cpu    = var.cpu_limit
           memory = var.memory_limit
         }
+        cpu_idle = true
       }
       
+      # Environment variables
       dynamic "env" {
         for_each = var.environment_variables
         content {
@@ -116,26 +118,25 @@ resource "google_cloud_run_v2_service" "service" {
         }
       }
       
+      # Health check probe
       startup_probe {
         http_get {
-          path = var.health_check_path
-          port = var.container_port
+          path = "/health"
         }
-        initial_delay_seconds = 5
-        timeout_seconds = 5
-        period_seconds = 10
-        failure_threshold = 3
+        initial_delay_seconds = 10
+        timeout_seconds       = 5
+        period_seconds        = 10
+        failure_threshold     = 3
       }
       
       liveness_probe {
         http_get {
-          path = var.health_check_path
-          port = var.container_port
+          path = "/health"
         }
         initial_delay_seconds = 30
-        timeout_seconds = 5
-        period_seconds = 30
-        failure_threshold = 3
+        timeout_seconds       = 5
+        period_seconds        = 30
+        failure_threshold     = 3
       }
     }
   }
@@ -145,21 +146,21 @@ resource "google_cloud_run_v2_service" "service" {
     type    = "TRAFFIC_TARGET_ALLOCATION_TYPE_LATEST"
   }
   
-  depends_on = [google_project_service.required_apis]
+  depends_on = [google_artifact_registry_repository.main]
 }
 
-# IAM policy for Cloud Run service (public access if enabled)
-resource "google_cloud_run_v2_service_iam_member" "public_access" {
+# IAM policy for public access (if enabled)
+resource "google_cloud_run_service_iam_member" "public_access" {
   count = var.allow_public_access ? 1 : 0
   
-  project  = var.project_id
-  location = var.region
-  name     = google_cloud_run_v2_service.service.name
+  location = google_cloud_run_v2_service.service.location
+  project  = google_cloud_run_v2_service.service.project
+  service  = google_cloud_run_v2_service.service.name
   role     = "roles/run.invoker"
   member   = "allUsers"
 }
 
-# Custom domain mapping (optional)
+# Custom domain mapping (if specified)
 resource "google_cloud_run_domain_mapping" "domain" {
   count = var.custom_domain != null ? 1 : 0
   
