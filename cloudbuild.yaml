@@ -1,58 +1,168 @@
-# cloudbuild.yaml
+# Cloud Build configuration for Flask/Streamlit application
+# This pipeline creates the Artifact Registry repository before building and pushing the Docker image
+
 steps:
-  # Build the container image
-  - name: 'gcr.io/cloud-builders/docker'
-    args:
-      - 'build'
-      - '-t'
-      - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_SERVICE_NAME}-${_ENVIRONMENT}/${_SERVICE_NAME}:${SHORT_SHA}'
-      - '.'
-    dir: 'app'
-
-  # Push the container image to Artifact Registry
-  - name: 'gcr.io/cloud-builders/docker'
-    args:
-      - 'push'
-      - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_SERVICE_NAME}-${_ENVIRONMENT}/${_SERVICE_NAME}:${SHORT_SHA}'
-
-  # Initialize Terraform
+  # Step 1: Initialize Terraform and prepare infrastructure
   - name: 'hashicorp/terraform:1.5'
+    id: 'terraform-init'
     entrypoint: 'sh'
     args:
       - '-c'
       - |
         cd terraform
-        terraform init \
-          -backend-config="bucket=${_TF_STATE_BUCKET}" \
-          -backend-config="prefix=${_SERVICE_NAME}/${_ENVIRONMENT}"
+        terraform init -backend-config="bucket=${_TF_STATE_BUCKET}" \
+                       -backend-config="prefix=terraform/state/${_ENVIRONMENT}"
+    env:
+      - 'TF_VAR_project_id=${PROJECT_ID}'
+      - 'TF_VAR_region=${_REGION}'
+      - 'TF_VAR_environment=${_ENVIRONMENT}'
+      - 'TF_VAR_service_name=${_SERVICE_NAME}'
 
-  # Plan Terraform changes
+  # Step 2: Plan Terraform changes (including Artifact Registry repository)
   - name: 'hashicorp/terraform:1.5'
+    id: 'terraform-plan'
     entrypoint: 'sh'
     args:
       - '-c'
       - |
         cd terraform
-        terraform plan \
-          -var-file="environments/${_ENVIRONMENT}.tfvars" \
-          -var="image_tag=${SHORT_SHA}" \
-          -var="project_id=${PROJECT_ID}" \
-          -out=tfplan
+        terraform plan -var-file="environments/${_ENVIRONMENT}.tfvars" \
+                       -out=tfplan
+    env:
+      - 'TF_VAR_project_id=${PROJECT_ID}'
+      - 'TF_VAR_region=${_REGION}'
+      - 'TF_VAR_environment=${_ENVIRONMENT}'
+      - 'TF_VAR_service_name=${_SERVICE_NAME}'
 
-  # Apply Terraform changes
+  # Step 3: Apply Terraform changes (creates Artifact Registry repository)
   - name: 'hashicorp/terraform:1.5'
+    id: 'terraform-apply'
     entrypoint: 'sh'
     args:
       - '-c'
       - |
         cd terraform
         terraform apply -auto-approve tfplan
+    env:
+      - 'TF_VAR_project_id=${PROJECT_ID}'
+      - 'TF_VAR_region=${_REGION}'
+      - 'TF_VAR_environment=${_ENVIRONMENT}'
+      - 'TF_VAR_service_name=${_SERVICE_NAME}'
 
-substitutions:
-  _REGION: 'us-central1'
-  _SERVICE_NAME: 'hello-world-app'
-  _ENVIRONMENT: 'dev'
-  _TF_STATE_BUCKET: 'your-terraform-state-bucket'
+  # Step 4: Get Artifact Registry repository details
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk:latest'
+    id: 'get-repository-info'
+    entrypoint: 'sh'
+    args:
+      - '-c'
+      - |
+        # Wait a moment for repository to be fully available
+        sleep 10
+        
+        # Verify repository exists
+        gcloud artifacts repositories describe ${_SERVICE_NAME}-${_ENVIRONMENT} \
+          --location=${_REGION} \
+          --format="value(name)" > /workspace/repo_name.txt
+        
+        # Set repository URL for next steps
+        echo "${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_SERVICE_NAME}-${_ENVIRONMENT}" > /workspace/repo_url.txt
+        
+        echo "Repository URL: $(cat /workspace/repo_url.txt)"
 
+  # Step 5: Configure Docker authentication
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk:latest'
+    id: 'configure-docker'
+    entrypoint: 'sh'
+    args:
+      - '-c'
+      - |
+        gcloud auth configure-docker ${_REGION}-docker.pkg.dev --quiet
+
+  # Step 6: Build Docker image
+  - name: 'gcr.io/cloud-builders/docker'
+    id: 'build-image'
+    dir: 'app'
+    args:
+      - 'build'
+      - '-t'
+      - '$(cat /workspace/repo_url.txt)/${_SERVICE_NAME}:${BUILD_ID}'
+      - '-t' 
+      - '$(cat /workspace/repo_url.txt)/${_SERVICE_NAME}:latest'
+      - '.'
+    waitFor: ['get-repository-info', 'configure-docker']
+
+  # Step 7: Push Docker image to Artifact Registry
+  - name: 'gcr.io/cloud-builders/docker'
+    id: 'push-image'
+    args:
+      - 'push'
+      - '--all-tags'
+      - '$(cat /workspace/repo_url.txt)/${_SERVICE_NAME}'
+    waitFor: ['build-image']
+
+  # Step 8: Update Cloud Run service with new image
+  - name: 'hashicorp/terraform:1.5'
+    id: 'terraform-apply-final'
+    entrypoint: 'sh'
+    args:
+      - '-c'
+      - |
+        cd terraform
+        # Force refresh and reapply to update Cloud Run with new image
+        terraform refresh -var-file="environments/${_ENVIRONMENT}.tfvars"
+        terraform apply -auto-approve -var-file="environments/${_ENVIRONMENT}.tfvars"
+    env:
+      - 'TF_VAR_project_id=${PROJECT_ID}'
+      - 'TF_VAR_region=${_REGION}'
+      - 'TF_VAR_environment=${_ENVIRONMENT}'
+      - 'TF_VAR_service_name=${_SERVICE_NAME}'
+    waitFor: ['push-image']
+
+  # Step 9: Verify deployment
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk:latest'
+    id: 'verify-deployment'
+    entrypoint: 'sh'
+    args:
+      - '-c'
+      - |
+        # Wait for service to be ready
+        echo "Waiting for Cloud Run service to be ready..."
+        sleep 30
+        
+        # Get service URL
+        SERVICE_URL=$(gcloud run services describe ${_SERVICE_NAME}-${_ENVIRONMENT} \
+          --region=${_REGION} \
+          --format="value(status.url)")
+        
+        echo "Service deployed at: $SERVICE_URL"
+        
+        # Test health endpoint
+        if curl -f -s "$SERVICE_URL/health" > /dev/null; then
+          echo "✅ Health check passed"
+        else
+          echo "❌ Health check failed"
+          exit 1
+        fi
+    waitFor: ['terraform-apply-final']
+
+# Timeout for the entire build
+timeout: '1800s'
+
+# Machine type for build
 options:
+  machineType: 'E2_STANDARD_2'
   logging: CLOUD_LOGGING_ONLY
+
+# Substitutions with defaults
+substitutions:
+  _SERVICE_NAME: 'flask-hello-world'  # Change this to your app name
+  _TF_STATE_BUCKET: 'your-tf-state-bucket'  # Change this to your Terraform state bucket
+  _REGION: 'us-central1'
+  _ENVIRONMENT: 'dev'  # Will be overridden by trigger
+
+# Required IAM roles for Cloud Build service account:
+# - roles/run.admin
+# - roles/iam.serviceAccountUser  
+# - roles/artifactregistry.admin
+# - roles/storage.admin (for Terraform state)
+# - roles/compute.admin (for Terraform resources)
