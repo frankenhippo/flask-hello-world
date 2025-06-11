@@ -104,7 +104,8 @@ configure_cloud_build() {
         gcloud projects add-iam-policy-binding "$project_id" \
             --member="serviceAccount:$cloud_build_sa" \
             --role="$role" \
-            --quiet
+            --quiet \
+            --condition=None
     done
     
     print_success "Cloud Build service account configured"
