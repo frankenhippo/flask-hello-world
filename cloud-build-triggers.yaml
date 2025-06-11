@@ -1,0 +1,61 @@
+# cloud-build-triggers.yaml
+# This file contains the Cloud Build trigger configurations for different environments
+# Apply these using gcloud CLI or the Cloud Console
+
+# Development environment trigger
+apiVersion: cloudbuild.cnrm.cloud.google.com/v1beta1
+kind: CloudBuildTrigger
+metadata:
+  name: hello-world-app-dev-trigger
+spec:
+  description: "Deploy to development environment on push to main branch"
+  github:
+    owner: "your-github-username"  # Update with your GitHub username
+    name: "your-repo-name"         # Update with your repository name
+    push:
+      branch: "^main$"
+  filename: "cloudbuild.yaml"
+  substitutions:
+    _ENVIRONMENT: "dev"
+    _SERVICE_NAME: "hello-world-app"
+    _REGION: "us-central1"
+    _TF_STATE_BUCKET: "your-terraform-state-bucket"  # Update with your bucket name
+
+---
+# Test environment trigger
+apiVersion: cloudbuild.cnrm.cloud.google.com/v1beta1
+kind: CloudBuildTrigger
+metadata:
+  name: hello-world-app-test-trigger
+spec:
+  description: "Deploy to test environment on push to test branch"
+  github:
+    owner: "your-github-username"
+    name: "your-repo-name"
+    push:
+      branch: "^test$"
+  filename: "cloudbuild.yaml"
+  substitutions:
+    _ENVIRONMENT: "test"
+    _SERVICE_NAME: "hello-world-app"
+    _REGION: "us-central1"
+    _TF_STATE_BUCKET: "your-terraform-state-bucket"
+
+---
+# Live environment trigger
+apiVersion: cloudbuild.cnrm.cloud.google.com/v1beta1
+kind: CloudBuildTrigger
+metadata:
+  name: hello-world-app-live-trigger
+spec:
+  description: "Deploy to live environment on tag creation"
+  github:
+    owner: "your-github-username"
+    name: "your-repo-name"
+    tag: "^v[0-9]+\\.[0-9]+\\.[0-9]+$"  # Matches version tags like v1.0.0
+  filename: "cloudbuild.yaml"
+  substitutions:
+    _ENVIRONMENT: "live"
+    _SERVICE_NAME: "hello-world-app"
+    _REGION: "us-central1"
+    _TF_STATE_BUCKET: "your-terraform-state-bucket"
